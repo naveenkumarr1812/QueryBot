@@ -142,18 +142,31 @@ if "message_history" not in st.session_state:
 if "thread_id" not in st.session_state:
     st.session_state["thread_id"] = generate_thread_id()
 
-if "chat_threads" not in st.session_state:
-    saved = get_user_threads(username)
-    st.session_state["chat_threads"] = [t["thread_id"] for t in saved]
-    st.session_state.setdefault("thread_titles", {})
-    for t in saved:
-        st.session_state["thread_titles"][t["thread_id"]] = t["title"]
+# Always reload threads + titles from DB so they survive session restarts
+saved = get_user_threads(username)
+saved_ids = [t["thread_id"] for t in saved]
 
-if "ingested_docs" not in st.session_state:
-    st.session_state["ingested_docs"] = {}
+if "chat_threads" not in st.session_state:
+    st.session_state["chat_threads"] = saved_ids
 
 if "thread_titles" not in st.session_state:
     st.session_state["thread_titles"] = {}
+
+# Sync any titles that are missing or still showing as raw thread IDs
+for t in saved:
+    tid, title = t["thread_id"], t["title"]
+    current = st.session_state["thread_titles"].get(tid, "")
+    # Overwrite if missing, blank, "New Chat", or looks like a raw UUID/prefixed ID
+    if not current or current == "New Chat" or current.startswith(username + ":"):
+        st.session_state["thread_titles"][tid] = title
+
+# Merge any DB threads not yet in session (e.g. opened from another tab)
+for tid in saved_ids:
+    if tid not in st.session_state["chat_threads"]:
+        st.session_state["chat_threads"].append(tid)
+
+if "ingested_docs" not in st.session_state:
+    st.session_state["ingested_docs"] = {}
 
 _add_thread(st.session_state["thread_id"])
 
