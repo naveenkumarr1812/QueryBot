@@ -6,7 +6,7 @@ langchain-huggingface
 langgraph
 fastembed
 pymupdf4llm
-chromadb
+faiss-cpu
 python-dotenv
 duckduckgo-search
 langgraph-checkpoint-sqlite

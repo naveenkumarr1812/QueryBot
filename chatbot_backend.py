@@ -8,7 +8,7 @@ from typing import Annotated, Any, Dict, List, Optional, Tuple, TypedDict
 from dotenv import load_dotenv
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.tools import DuckDuckGoSearchRun
-from langchain_community.vectorstores import Chroma
+from langchain_community.vectorstores import FAISS
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langchain_core.tools import tool
 from langchain_groq import ChatGroq
@@ -197,7 +197,7 @@ def ingest_pdf(file_bytes: bytes, thread_id: str, filename: Optional[str] = None
         if not chunks:
             raise ValueError("Text was found but could not be split into chunks.")
 
-        vector_store = Chroma.from_documents(chunks, embeddings)
+        vector_store = FAISS.from_documents(chunks, embeddings)
         retriever = vector_store.as_retriever(
             search_type="similarity", search_kwargs={"k": 4}
         )

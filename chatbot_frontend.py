@@ -13,6 +13,7 @@ from chatbot_backend import (
     register_user,
     save_user_thread,
     get_user_threads,
+    delete_user_thread,
 )
 
 st.set_page_config(page_title="QueryBot", page_icon="🤖", layout="wide")
@@ -240,8 +241,18 @@ with st.sidebar:
             title = st.session_state["thread_titles"].get(tid, f"Chat {str(tid)[-8:]}…")
             is_active = tid == thread_key
             label = f"{'▶ ' if is_active else ''}{title}"
-            if st.button(label, key=f"thread-{tid}", use_container_width=True):
-                selected_thread = tid
+            col_title, col_del = st.columns([5, 1])
+            with col_title:
+                if st.button(label, key=f"thread-{tid}", use_container_width=True):
+                    selected_thread = tid
+            with col_del:
+                if st.button("🗑", key=f"del-{tid}", help="Delete this chat"):
+                    delete_user_thread(username, tid)
+                    st.session_state["chat_threads"].remove(tid)
+                    st.session_state["thread_titles"].pop(tid, None)
+                    if tid == thread_key:
+                        reset_chat()
+                    st.rerun()
 
 
 
