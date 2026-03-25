@@ -23,6 +23,131 @@ from langchain_core.documents import Document
 load_dotenv()
 
 
+
+# Auth — users table in the same SQLite DB
+_AUTH_DB_PATH = "/tmp/chatbot_auth.db"
+
+def _get_auth_conn():
+    conn = sqlite3.connect(_AUTH_DB_PATH, check_same_thread=False)
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS users (
+            username  TEXT PRIMARY KEY,
+            password  TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_threads (
+            username  TEXT NOT NULL,
+            thread_id TEXT NOT NULL,
+            title     TEXT NOT NULL DEFAULT 'New Chat',
+            PRIMARY KEY (username, thread_id)
+        )
+        """
+    )
+    conn.commit()
+    return conn
+
+
+def _hash_password(password: str) -> str:
+    import hashlib, os
+    salt = os.urandom(16)
+    hashed = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 260_000)
+    return salt.hex() + ":" + hashed.hex()
+
+
+def _verify_password(password: str, stored: str) -> bool:
+    import hashlib
+    try:
+        salt_hex, hash_hex = stored.split(":")
+        salt = bytes.fromhex(salt_hex)
+        hashed = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 260_000)
+        return hashed.hex() == hash_hex
+    except Exception:
+        return False
+
+
+def register_user(username: str, password: str) -> tuple[bool, str]:
+    """Returns (success, message)."""
+    username = username.strip().lower()
+    if not username or not password:
+        return False, "Username and password cannot be empty."
+    if len(password) < 6:
+        return False, "Password must be at least 6 characters."
+    conn = _get_auth_conn()
+    try:
+        conn.execute(
+            "INSERT INTO users (username, password) VALUES (?, ?)",
+            (username, _hash_password(password)),
+        )
+        conn.commit()
+        return True, "Account created successfully."
+    except sqlite3.IntegrityError:
+        return False, "Username already exists. Please choose another."
+    finally:
+        conn.close()
+
+
+def login_user(username: str, password: str) -> tuple[bool, str]:
+    """Returns (success, message)."""
+    username = username.strip().lower()
+    conn = _get_auth_conn()
+    try:
+        row = conn.execute(
+            "SELECT password FROM users WHERE username = ?", (username,)
+        ).fetchone()
+        if row is None:
+            return False, "Username not found."
+        if not _verify_password(password, row[0]):
+            return False, "Incorrect password."
+        return True, "Login successful."
+    finally:
+        conn.close()
+
+
+def save_user_thread(username: str, thread_id: str, title: str = "New Chat") -> None:
+    conn = _get_auth_conn()
+    try:
+        conn.execute(
+            """
+            INSERT INTO user_threads (username, thread_id, title)
+            VALUES (?, ?, ?)
+            ON CONFLICT(username, thread_id) DO UPDATE SET title=excluded.title
+            """,
+            (username, thread_id, title),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_user_threads(username: str) -> list[dict]:
+    """Return list of {thread_id, title} for a user, newest first."""
+    conn = _get_auth_conn()
+    try:
+        rows = conn.execute(
+            "SELECT thread_id, title FROM user_threads WHERE username = ? ORDER BY rowid DESC",
+            (username,),
+        ).fetchall()
+        return [{"thread_id": r[0], "title": r[1]} for r in rows]
+    finally:
+        conn.close()
+
+
+def delete_user_thread(username: str, thread_id: str) -> None:
+    conn = _get_auth_conn()
+    try:
+        conn.execute(
+            "DELETE FROM user_threads WHERE username = ? AND thread_id = ?",
+            (username, thread_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 # 1. LLM
 llm = ChatGroq(model="openai/gpt-oss-120b")
 
@@ -260,6 +385,7 @@ chatbot = graph.compile(checkpointer=checkpointer)
 
 # 10. Helpers
 def retrieve_all_threads() -> list:
+    """Kept for backwards compat — not used when auth is enabled."""
     try:
         return list({
             cp.config["configurable"]["thread_id"]

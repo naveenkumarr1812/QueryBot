@@ -7,18 +7,95 @@ from chatbot_backend import (
     chatbot,
     generate_thread_title,
     ingest_pdf,
-    retrieve_all_threads,
     thread_document_metadata,
+    # Auth
+    login_user,
+    register_user,
+    save_user_thread,
+    get_user_threads,
 )
 
 st.set_page_config(page_title="QueryBot", page_icon="🤖", layout="wide")
 
 
-# -----------------------------------------------------------------------
+
+# Auth page — shown when not logged in
+def show_auth_page():
+    col1, col2, col3 = st.columns([1, 1.2, 1])
+    with col2:
+        st.markdown("<br><br>", unsafe_allow_html=True)
+        st.title("🤖 QueryBot")
+        st.caption("Your personal AI assistant with PDF, web search & calculator.")
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        tab_login, tab_register = st.tabs(["Login", "Create Account"])
+
+        with tab_login:
+            with st.form("login_form"):
+                username = st.text_input("Username", placeholder="your username")
+                password = st.text_input("Password", type="password", placeholder="••••••••")
+                submitted = st.form_submit_button("Login", use_container_width=True)
+                if submitted:
+                    if not username or not password:
+                        st.error("Please enter both username and password.")
+                    else:
+                        ok, msg = login_user(username, password)
+                        if ok:
+                            _init_user_session(username.strip().lower())
+                            st.rerun()
+                        else:
+                            st.error(msg)
+
+        with tab_register:
+            with st.form("register_form"):
+                new_username = st.text_input("Choose a username", placeholder="e.g. john_doe")
+                new_password = st.text_input(
+                    "Choose a password", type="password", placeholder="min 6 characters"
+                )
+                confirm_password = st.text_input(
+                    "Confirm password", type="password", placeholder="repeat password"
+                )
+                submitted = st.form_submit_button("Create Account", use_container_width=True)
+                if submitted:
+                    if new_password != confirm_password:
+                        st.error("Passwords do not match.")
+                    else:
+                        ok, msg = register_user(new_username, new_password)
+                        if ok:
+                            st.success(msg + " Please log in.")
+                        else:
+                            st.error(msg)
+
+
+def _init_user_session(username: str):
+    """Set up session state for a freshly logged-in user."""
+    st.session_state["username"] = username
+    st.session_state["message_history"] = []
+    st.session_state["ingested_docs"] = {}
+    st.session_state["thread_titles"] = {}
+
+    # Load this user's persisted threads from DB
+    saved = get_user_threads(username)
+    st.session_state["chat_threads"] = [t["thread_id"] for t in saved]
+    for t in saved:
+        st.session_state["thread_titles"][t["thread_id"]] = t["title"]
+
+    # Start a fresh thread for this session
+    new_tid = _make_thread_id(username)
+    st.session_state["thread_id"] = new_tid
+    _add_thread(new_tid)
+
+
+
 # Utilities
-# -----------------------------------------------------------------------
+def _make_thread_id(username: str) -> str:
+    """Prefix thread IDs with username so they are globally unique per user."""
+    return f"{username}:{uuid.uuid4()}"
+
+
 def generate_thread_id() -> str:
-    return str(uuid.uuid4())
+    username = st.session_state.get("username", "anon")
+    return _make_thread_id(username)
 
 
 def reset_chat():
@@ -26,6 +103,8 @@ def reset_chat():
     st.session_state["thread_id"] = thread_id
     _add_thread(thread_id)
     st.session_state["message_history"] = []
+    # Persist immediately so it survives a new tab
+    save_user_thread(st.session_state["username"], thread_id, "New Chat")
 
 
 def _add_thread(thread_id: str):
@@ -41,9 +120,22 @@ def load_conversation(thread_id: str) -> list:
         return []
 
 
-# -----------------------------------------------------------------------
-# Session state initialisation
-# -----------------------------------------------------------------------
+def logout():
+    for key in list(st.session_state.keys()):
+        del st.session_state[key]
+
+
+
+# Guard — show auth page if not logged in
+if "username" not in st.session_state:
+    show_auth_page()
+    st.stop()
+
+
+
+# Session state initialisation (only reached when logged in)
+username: str = st.session_state["username"]
+
 if "message_history" not in st.session_state:
     st.session_state["message_history"] = []
 
@@ -51,12 +143,15 @@ if "thread_id" not in st.session_state:
     st.session_state["thread_id"] = generate_thread_id()
 
 if "chat_threads" not in st.session_state:
-    st.session_state["chat_threads"] = retrieve_all_threads()
+    saved = get_user_threads(username)
+    st.session_state["chat_threads"] = [t["thread_id"] for t in saved]
+    st.session_state.setdefault("thread_titles", {})
+    for t in saved:
+        st.session_state["thread_titles"][t["thread_id"]] = t["title"]
 
 if "ingested_docs" not in st.session_state:
     st.session_state["ingested_docs"] = {}
 
-# thread_titles maps thread_id -> short human-readable title
 if "thread_titles" not in st.session_state:
     st.session_state["thread_titles"] = {}
 
@@ -68,11 +163,18 @@ threads: list = st.session_state["chat_threads"][::-1]
 selected_thread = None
 
 
-# -----------------------------------------------------------------------
+
 # Sidebar
-# -----------------------------------------------------------------------
 with st.sidebar:
     st.title("QueryBot")
+
+    # User info + logout
+    st.markdown(f"👤 **{username}**")
+    if st.button("Logout", use_container_width=True):
+        logout()
+        st.rerun()
+
+    st.divider()
 
     if st.button("➕ New Chat", use_container_width=True):
         reset_chat()
@@ -116,35 +218,28 @@ with st.sidebar:
 
     st.divider()
 
-    # Past conversations — show title instead of UUID
+    # Past conversations
     st.subheader("💬 Past Conversations")
     if not threads:
         st.caption("No past conversations yet.")
     else:
         for tid in threads:
-            title = st.session_state["thread_titles"].get(
-                tid,
-                f"Chat {str(tid)[:8]}…"   # fallback until title is generated
-            )
-            # Highlight the active thread
+            title = st.session_state["thread_titles"].get(tid, f"Chat {str(tid)[-8:]}…")
             is_active = tid == thread_key
             label = f"{'▶ ' if is_active else ''}{title}"
             if st.button(label, key=f"thread-{tid}", use_container_width=True):
                 selected_thread = tid
 
 
-# -----------------------------------------------------------------------
+
 # Main chat area
-# -----------------------------------------------------------------------
 st.title("QueryBot")
 st.caption("Ask questions about your PDF, use web search, or calculate anything.")
 
-# Render existing messages
 for message in st.session_state["message_history"]:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# Chat input
 user_input = st.chat_input("Ask about your document, search the web, or calculate…")
 
 if user_input:
@@ -152,11 +247,12 @@ if user_input:
     with st.chat_message("user"):
         st.markdown(user_input)
 
-    # Generate a title from the very first message of this thread
-    if thread_key not in st.session_state["thread_titles"]:
+    # Generate + persist title from the very first real message of this thread
+    if st.session_state["thread_titles"].get(thread_key) in (None, "New Chat"):
         with st.spinner(""):
             title = generate_thread_title(user_input)
             st.session_state["thread_titles"][thread_key] = title
+            save_user_thread(username, thread_key, title)
 
     CONFIG = {
         "configurable": {"thread_id": thread_key},
@@ -213,9 +309,8 @@ if user_input:
 
 st.divider()
 
-# -----------------------------------------------------------------------
+
 # Load a past conversation when sidebar button is clicked
-# -----------------------------------------------------------------------
 if selected_thread:
     st.session_state["thread_id"] = selected_thread
     messages = load_conversation(selected_thread)
