@@ -180,8 +180,6 @@ selected_thread = None
 
 # Sidebar
 with st.sidebar:
-    st.title("QueryBot")
-
     # User info + logout
     st.markdown(f"👤 **{username}**")
     if st.button("Logout", use_container_width=True):
